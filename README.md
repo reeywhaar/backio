@@ -46,7 +46,17 @@ Run the interactive setup to obtain `RCLONE_CONF_BASE64`:
 
 This builds a temporary container, walks you through the OAuth flow, and prints the base64 value to paste into your `.env`.
 
+## Image
+
+Published to GitHub Container Registry on every `v*` tag:
+
+```sh
+docker pull ghcr.io/reeywhaar/backio:latest
+```
+
 ## Build & run
+
+To build locally from source:
 
 ```sh
 # Build (forces linux/amd64 for Apple Silicon compatibility)
