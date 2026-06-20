@@ -19,6 +19,12 @@ List or delete backups via `GET /backup` and `DELETE /backup`.
 
 ## Endpoints
 
+### `GET /health`
+
+Returns `{"status":"ok"}` with a `200`. No authentication required. Used by the Docker healthcheck.
+
+---
+
 ### `GET /backup`
 
 Query parameters:

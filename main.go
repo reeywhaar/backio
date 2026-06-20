@@ -186,6 +186,11 @@ func backupHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, `{"status":"ok","destination":%q}`, destination)
 }
 
+func healthHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(`{"status":"ok"}`))
+}
+
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -212,6 +217,7 @@ func main() {
 		port = "8080"
 	}
 
+	http.HandleFunc("/health", healthHandler)
 	http.HandleFunc("/backup", backupHandler)
 	log.Printf("listening on :%s", port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
