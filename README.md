@@ -43,8 +43,29 @@ All requests require `Authorization: Bearer <token>` with `read` permission for 
 Example:
 
 ```sh
-curl -H "Authorization: Bearer $TOKEN" \
+curl -H "Authorization: Bearer $BACKUP_TOKEN" \
   "http://backio:8080/backup?provider=gdrive&subdirectory=myapp/production"
+```
+
+```json
+[
+  {
+    "Path": "myapp-20240115.tar",
+    "Name": "myapp-20240115.tar",
+    "Size": 1048576,
+    "MimeType": "application/x-tar",
+    "ModTime": "2024-01-15T10:30:00.000000000Z",
+    "IsDir": false
+  },
+  {
+    "Path": "myapp-20240116.tar",
+    "Name": "myapp-20240116.tar",
+    "Size": 1052672,
+    "MimeType": "application/x-tar",
+    "ModTime": "2024-01-16T10:30:00.000000000Z",
+    "IsDir": false
+  }
+]
 ```
 
 ---
