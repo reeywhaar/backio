@@ -191,9 +191,126 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"status":"ok"}`))
 }
 
+func cmdUpload(args []string) error {
+	if len(args) != 3 {
+		return fmt.Errorf("usage: backio upload <provider> <subdirectory> <name>")
+	}
+	provider, subdirectory, name := args[0], args[1], args[2]
+
+	var errs []string
+	for _, check := range [][2]string{{"provider", provider}, {"subdirectory", subdirectory}, {"name", name}} {
+		if msg := internal.ValidateField(check[1], check[0]); msg != "" {
+			errs = append(errs, msg)
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "\n"))
+	}
+
+	tmp, err := os.CreateTemp("", "backup-*.tar")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	defer os.Remove(tmp.Name())
+
+	if _, err := io.Copy(tmp, os.Stdin); err != nil {
+		tmp.Close()
+		return fmt.Errorf("failed to read stdin: %w", err)
+	}
+	tmp.Close()
+
+	destination := provider + ":" + filepath.Join(subdirectory, name)
+	out, err := exec.Command("rclone", "copyto", tmp.Name(), destination).CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = err.Error()
+		}
+		return fmt.Errorf("rclone failed: %s", msg)
+	}
+
+	fmt.Printf("uploaded to %s\n", destination)
+	return nil
+}
+
+func cmdDelete(args []string) error {
+	if len(args) != 3 {
+		return fmt.Errorf("usage: backio delete <provider> <subdirectory> <name>")
+	}
+	provider, subdirectory, name := args[0], args[1], args[2]
+
+	var errs []string
+	for _, check := range [][2]string{{"provider", provider}, {"subdirectory", subdirectory}, {"name", name}} {
+		if msg := internal.ValidateField(check[1], check[0]); msg != "" {
+			errs = append(errs, msg)
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "\n"))
+	}
+
+	target := provider + ":" + filepath.Join(subdirectory, name)
+	out, err := exec.Command("rclone", "deletefile", target).CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = err.Error()
+		}
+		return fmt.Errorf("rclone failed: %s", msg)
+	}
+
+	fmt.Printf("deleted %s\n", target)
+	return nil
+}
+
+func cmdList(args []string) error {
+	if len(args) != 2 {
+		return fmt.Errorf("usage: backio list <provider> <subdirectory>")
+	}
+	provider, subdirectory := args[0], args[1]
+
+	var errs []string
+	for _, check := range [][2]string{{"provider", provider}, {"subdirectory", subdirectory}} {
+		if msg := internal.ValidateField(check[1], check[0]); msg != "" {
+			errs = append(errs, msg)
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "\n"))
+	}
+
+	target := provider + ":" + subdirectory
+	out, err := exec.Command("rclone", "lsjson", target).CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = err.Error()
+		}
+		return fmt.Errorf("rclone failed: %s", msg)
+	}
+
+	os.Stdout.Write(out)
+	return nil
+}
+
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "upload":
+			if err := cmdUpload(os.Args[2:]); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+		case "delete":
+			if err := cmdDelete(os.Args[2:]); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+		case "list":
+			if err := cmdList(os.Args[2:]); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
 		case "issue-token":
 			if err := internal.CmdIssueToken(os.Args[2:]); err != nil {
 				fmt.Fprintln(os.Stderr, err)
@@ -215,7 +332,7 @@ func main() {
 			}
 		default:
 			fmt.Fprintf(os.Stderr, "unknown command %q\n", os.Args[1])
-			fmt.Fprintln(os.Stderr, "commands: issue-token, list-tokens, delete-token")
+			fmt.Fprintln(os.Stderr, "commands: upload, delete, list, issue-token, list-tokens, delete-token")
 			os.Exit(1)
 		}
 		return

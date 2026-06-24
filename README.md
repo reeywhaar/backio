@@ -127,6 +127,34 @@ curl -X DELETE \
   "http://backio:8080/backup?provider=gdrive&subdirectory=myapp/production&name=myapp-20240115.tar"
 ```
 
+## CLI commands
+
+The binary can also be used directly inside the container to upload, delete, and list backups without going through the HTTP API or needing a token.
+
+**Upload from stdin:**
+
+```sh
+cat archive.tar | docker exec -i backio /backio upload gdrive myapp/production myapp-20240115.tar
+```
+
+Reads the archive from stdin and uploads it to `provider:subdirectory/name` via `rclone copyto`.
+
+**Delete a file:**
+
+```sh
+docker exec backio /backio delete gdrive myapp/production myapp-20240115.tar
+```
+
+**List files:**
+
+```sh
+docker exec backio /backio list gdrive myapp/production
+```
+
+Outputs the `rclone lsjson` result — a JSON array of file objects (same format as `GET /backup`).
+
+---
+
 ## Access control
 
 Every request requires an `Authorization: Bearer <token>` header. Tokens are issued via the CLI and stored in `/data/tokens.json` inside the container.
