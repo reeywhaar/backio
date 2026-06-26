@@ -293,11 +293,42 @@ func cmdList(args []string) error {
 	return nil
 }
 
+func cmdDownload(args []string) error {
+	if len(args) != 3 {
+		return fmt.Errorf("usage: backio download <provider> <subdirectory> <name>")
+	}
+	provider, subdirectory, name := args[0], args[1], args[2]
+
+	var errs []string
+	for _, check := range [][2]string{{"provider", provider}, {"subdirectory", subdirectory}, {"name", name}} {
+		if msg := internal.ValidateField(check[1], check[0]); msg != "" {
+			errs = append(errs, msg)
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "\n"))
+	}
+
+	source := provider + ":" + filepath.Join(subdirectory, name)
+	cmd := exec.Command("rclone", "cat", source)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("rclone failed: %s", err.Error())
+	}
+	return nil
+}
+
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "upload":
 			if err := cmdUpload(os.Args[2:]); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+		case "download":
+			if err := cmdDownload(os.Args[2:]); err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				os.Exit(1)
 			}
@@ -332,7 +363,7 @@ func main() {
 			}
 		default:
 			fmt.Fprintf(os.Stderr, "unknown command %q\n", os.Args[1])
-			fmt.Fprintln(os.Stderr, "commands: upload, delete, list, issue-token, list-tokens, delete-token")
+			fmt.Fprintln(os.Stderr, "commands: upload, download, delete, list, issue-token, list-tokens, delete-token")
 			os.Exit(1)
 		}
 		return

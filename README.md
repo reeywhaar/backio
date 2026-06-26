@@ -129,7 +129,7 @@ curl -X DELETE \
 
 ## CLI commands
 
-The binary can also be used directly inside the container to upload, delete, and list backups without going through the HTTP API or needing a token.
+The binary can also be used directly inside the container to upload, download, delete, and list backups without going through the HTTP API or needing a token.
 
 **Upload from stdin:**
 
@@ -138,6 +138,14 @@ cat archive.tar | docker exec -i backio /backio upload gdrive myapp/production m
 ```
 
 Reads the archive from stdin and uploads it to `provider:subdirectory/name` via `rclone copyto`.
+
+**Download to stdout:**
+
+```sh
+docker exec backio /backio download gdrive myapp/production myapp-20240115.tar > archive.tar
+```
+
+Streams the file from `provider:subdirectory/name` via `rclone cat` to stdout.
 
 **Delete a file:**
 
