@@ -2,6 +2,8 @@
 
 A Docker image that receives backup archives over HTTP and forwards them to any [rclone](https://rclone.org)-configured cloud provider (Google Drive, S3, Backblaze, etc.).
 
+The image ships the official prebuilt rclone binary, UPX-compressed to keep the image small — so every rclone backend is available.
+
 ## How it works
 
 1. Another container (or script) POSTs a tar archive to `POST /backup`
@@ -9,6 +11,10 @@ A Docker image that receives backup archives over HTTP and forwards them to any 
 3. Returns `{"status":"ok","destination":"..."}` on success
 
 List or delete backups via `GET /backup` and `DELETE /backup`.
+
+## Supported backends
+
+The image bundles the official rclone binary, so **every** [rclone backend](https://rclone.org/overview/) is available — S3 (and S3-compatible: R2, MinIO, Wasabi, Spaces, Ceph…), Google Drive, Dropbox, SFTP, Backblaze B2, Google Cloud Storage, OneDrive, WebDAV, Azure Blob, FTP, and the rest.
 
 ## Environment variables
 
