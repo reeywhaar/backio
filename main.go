@@ -90,6 +90,21 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.ResponseWriter.WriteHeader(code)
 }
 
+// clientAddr returns the originating client address, preferring proxy-forwarded
+// headers (X-Forwarded-For, X-Real-IP) and falling back to r.RemoteAddr.
+func clientAddr(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		// X-Forwarded-For may be a comma-separated list; the first entry is the
+		// original client.
+		first, _, _ := strings.Cut(xff, ",")
+		return strings.TrimSpace(first)
+	}
+	if xrip := strings.TrimSpace(r.Header.Get("X-Real-IP")); xrip != "" {
+		return xrip
+	}
+	return r.RemoteAddr
+}
+
 // logRequests logs every incoming HTTP request with method, path, status and duration.
 func logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -99,7 +114,7 @@ func logRequests(next http.Handler) http.Handler {
 		logger.Info("request received",
 			"method", r.Method,
 			"path", r.URL.Path,
-			"remote_addr", r.RemoteAddr,
+			"remote_addr", clientAddr(r),
 		)
 
 		next.ServeHTTP(rec, r)
