@@ -5,13 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
+
+var logger = slog.New(slog.NewJSONHandler(os.Stderr, nil))
 
 func jsonError(w http.ResponseWriter, message string, code int) {
 	w.Header().Set("Content-Type", "application/json")
@@ -31,18 +34,39 @@ func bearerToken(r *http.Request) string {
 func authorize(w http.ResponseWriter, r *http.Request, provider, subdirectory, permission string) bool {
 	token := bearerToken(r)
 	if token == "" {
+		logger.Warn("authorization missing",
+			"provider", provider,
+			"subdirectory", subdirectory,
+			"permission", permission,
+		)
 		jsonError(w, "authorization required", http.StatusUnauthorized)
 		return false
 	}
 	ok, err := internal.CheckToken(token, provider, subdirectory, permission)
 	if err != nil {
+		logger.Error("token verification failed",
+			"provider", provider,
+			"subdirectory", subdirectory,
+			"permission", permission,
+			"error", err,
+		)
 		jsonError(w, "failed to verify token: "+err.Error(), http.StatusInternalServerError)
 		return false
 	}
 	if !ok {
+		logger.Warn("authorization denied",
+			"provider", provider,
+			"subdirectory", subdirectory,
+			"permission", permission,
+		)
 		jsonError(w, "forbidden", http.StatusForbidden)
 		return false
 	}
+	logger.Debug("authorization granted",
+		"provider", provider,
+		"subdirectory", subdirectory,
+		"permission", permission,
+	)
 	return true
 }
 
@@ -51,12 +75,47 @@ func rcloneError(w http.ResponseWriter, out []byte, err error) {
 	if msg == "" {
 		msg = err.Error()
 	}
+	logger.Error("rclone command failed", "error", msg)
 	jsonError(w, "rclone failed: "+msg, http.StatusInternalServerError)
+}
+
+// statusRecorder wraps http.ResponseWriter to capture the status code written.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+// logRequests logs every incoming HTTP request with method, path, status and duration.
+func logRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+
+		logger.Info("request received",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"remote_addr", r.RemoteAddr,
+		)
+
+		next.ServeHTTP(rec, r)
+
+		logger.Info("request completed",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", rec.status,
+			"duration_ms", time.Since(start).Milliseconds(),
+		)
+	})
 }
 
 func listBackupsHandler(w http.ResponseWriter, r *http.Request) {
 	subdirectory := strings.TrimSpace(r.URL.Query().Get("subdirectory"))
-	provider     := strings.TrimSpace(r.URL.Query().Get("provider"))
+	provider := strings.TrimSpace(r.URL.Query().Get("provider"))
 
 	var errs []string
 	for _, check := range [][2]string{{"subdirectory", subdirectory}, {"provider", provider}} {
@@ -74,20 +133,22 @@ func listBackupsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	target := provider + ":" + subdirectory
+	logger.Info("listing backups", "target", target)
 	out, err := exec.Command("rclone", "lsjson", target).CombinedOutput()
 	if err != nil {
 		rcloneError(w, out, err)
 		return
 	}
 
+	logger.Info("backups listed", "target", target)
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(out)
 }
 
 func deleteBackupHandler(w http.ResponseWriter, r *http.Request) {
-	name         := strings.TrimSpace(r.URL.Query().Get("name"))
+	name := strings.TrimSpace(r.URL.Query().Get("name"))
 	subdirectory := strings.TrimSpace(r.URL.Query().Get("subdirectory"))
-	provider     := strings.TrimSpace(r.URL.Query().Get("provider"))
+	provider := strings.TrimSpace(r.URL.Query().Get("provider"))
 
 	var errs []string
 	for _, check := range [][2]string{{"name", name}, {"subdirectory", subdirectory}, {"provider", provider}} {
@@ -105,12 +166,14 @@ func deleteBackupHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	target := provider + ":" + filepath.Join(subdirectory, name)
+	logger.Info("deleting backup", "target", target)
 	out, err := exec.Command("rclone", "deletefile", target).CombinedOutput()
 	if err != nil {
 		rcloneError(w, out, err)
 		return
 	}
 
+	logger.Info("backup deleted", "target", target)
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprintf(w, `{"status":"ok","deleted":%q}`, target)
 }
@@ -131,13 +194,14 @@ func backupHandler(w http.ResponseWriter, r *http.Request) {
 
 	// 32MB in memory; larger spills to OS temp files automatically
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		logger.Warn("failed to parse multipart form", "error", err)
 		jsonError(w, "failed to parse form: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	name         := strings.TrimSpace(r.FormValue("name"))
+	name := strings.TrimSpace(r.FormValue("name"))
 	subdirectory := strings.TrimSpace(r.FormValue("subdirectory"))
-	provider     := strings.TrimSpace(r.FormValue("provider"))
+	provider := strings.TrimSpace(r.FormValue("provider"))
 
 	file, _, err := r.FormFile("backup")
 	if err != nil {
@@ -163,25 +227,30 @@ func backupHandler(w http.ResponseWriter, r *http.Request) {
 
 	tmp, err := os.CreateTemp("", "backup-*.tar")
 	if err != nil {
+		logger.Error("failed to create temp file", "error", err)
 		jsonError(w, "failed to create temp file: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	defer os.Remove(tmp.Name())
 
-	if _, err := io.Copy(tmp, file); err != nil {
+	written, err := io.Copy(tmp, file)
+	if err != nil {
 		tmp.Close()
+		logger.Error("failed to write upload", "error", err)
 		jsonError(w, "failed to write upload: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	tmp.Close()
 
 	destination := provider + ":" + filepath.Join(subdirectory, name)
+	logger.Info("uploading backup", "destination", destination, "size_bytes", written)
 	out, err := exec.Command("rclone", "copyto", tmp.Name(), destination).CombinedOutput()
 	if err != nil {
 		rcloneError(w, out, err)
 		return
 	}
 
+	logger.Info("backup uploaded", "destination", destination, "size_bytes", written)
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprintf(w, `{"status":"ok","destination":%q}`, destination)
 }
@@ -374,8 +443,13 @@ func main() {
 		port = "8080"
 	}
 
-	http.HandleFunc("/health", healthHandler)
-	http.HandleFunc("/backup", backupHandler)
-	log.Printf("listening on :%s", port)
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", healthHandler)
+	mux.HandleFunc("/backup", backupHandler)
+
+	logger.Info("server starting", "port", port)
+	if err := http.ListenAndServe(":"+port, logRequests(mux)); err != nil {
+		logger.Error("server stopped", "error", err)
+		os.Exit(1)
+	}
 }
