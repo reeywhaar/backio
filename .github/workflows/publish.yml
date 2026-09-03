@@ -38,6 +38,25 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
+      # The backup sidecar, versioned in lockstep with the server it uploads to.
+      - uses: docker/metadata-action@v6
+        id: meta-agent
+        with:
+          images: ghcr.io/${{ github.repository }}-agent
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: agent/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta-agent.outputs.tags }}
+          labels: ${{ steps.meta-agent.outputs.labels }}
+
       - uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true

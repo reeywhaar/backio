@@ -283,6 +283,51 @@ networks:
     external: true # created by run.sh, shared across projects
 ```
 
+## backio-agent (backup sidecar)
+
+Every project that needs backups faces the same list: hold a token, name the archive, keep
+some history, throw the rest away, notice when it stops working. [`agent/`](agent/README.md)
+is a second image that does all of it, so a project only has to produce an archive and post
+it somewhere on its own network.
+
+```
+myapp ──POST /backup──▶ backio-agent ──POST /backup──▶ backio ──▶ Drive, S3, B2, …
+        (no credential)                 (Bearer token)
+```
+
+```yaml
+services:
+  myapp:
+    image: myapp:latest
+    environment:
+      BACKUP_URL: http://backup:8080/backup # post the archive here, no token needed
+    networks: [default]
+
+  backup:
+    image: ghcr.io/reeywhaar/backio-agent:latest
+    restart: unless-stopped
+    environment:
+      BACKIO_HOST: http://backio:8080
+      BACKIO_PROVIDER: gdrive
+      BACKIO_SUBDIRECTORY: myapp/production
+      BACKIO_TOKEN: "<token issued via docker exec backio /backio issue-token>"
+    networks: [default, backup-net]
+
+networks:
+  backup-net:
+    external: true # whichever network backio itself is on
+```
+
+The agent speaks the same upload protocol as `POST /backup` above, so a service already
+posting here only changes the URL. In exchange it gets timestamped naming, a retention
+policy on both ends, optional AES-256 encryption, and a healthcheck that goes red when
+archives stop arriving — and the app container no longer holds a credential that can read
+or delete existing backups.
+
+The four `BACKIO_` variables are all-or-nothing: set all four to forward to backio, or none
+of them to keep local copies only. Mount a volume at `/backups` and it keeps local copies
+alongside forwarding. See [agent/README.md](agent/README.md) for the full set of variables.
+
 ## send-backup.sh
 
 A standalone client script. Copy it into other Docker images to send backups:
