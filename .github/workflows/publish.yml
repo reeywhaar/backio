@@ -5,7 +5,18 @@ on:
     tags: ["v*"]
 
 jobs:
+  # A tag is the one build nobody watches, so nothing is published unless this passes.
+  # Run in the same golang image the Dockerfiles build with, rather than a setup-go
+  # version pin that drifts from them.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - run: docker run --rm -v "$PWD":/src -w /src golang:alpine sh -c "go vet ./... && go test ./..."
+
   build:
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: write
