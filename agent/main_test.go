@@ -329,6 +329,51 @@ func TestBackupHandlerRejectsBadRequests(t *testing.T) {
 	})
 }
 
+// The client must not be told "ok" until the archive is actually on the remote, or it
+// marks the backup delivered and moves on while the upload is still in flight — or
+// failing. True today because receive() is synchronous; asserted here so it stays true.
+func TestBackupHandlerAnswersOnlyAfterTheUploadCompletes(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(entered)
+		<-release // the upload is now in flight and going nowhere
+		io.Copy(io.Discard, r.Body)
+		fmt.Fprint(w, `{"status":"ok","destination":"gdrive:myapp/production/x.tgz"}`)
+	}))
+	defer srv.Close()
+
+	a := newAgent(t, config{
+		url: srv.URL, token: "secret", provider: "gdrive", subdirectory: "myapp/production",
+	})
+
+	var rec *httptest.ResponseRecorder
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		rec = postArchive(t, a, "backup.tgz", []byte("archive contents"))
+	}()
+
+	<-entered
+	// Mid-upload: nothing may have been said to the client yet.
+	select {
+	case <-done:
+		t.Fatal("the handler answered before the upload finished")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+	<-done
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), `"status":"ok"`) {
+		t.Errorf("body = %s", rec.Body)
+	}
+}
+
 // A rejected upload must not read as success: the service is entitled to know its backup
 // did not land, and to retry.
 func TestBackupHandlerReportsAFailedUpload(t *testing.T) {

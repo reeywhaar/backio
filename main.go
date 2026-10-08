@@ -70,6 +70,53 @@ func authorize(w http.ResponseWriter, r *http.Request, provider, subdirectory, p
 	return true
 }
 
+// runRclone is every rclone invocation in one place, as a variable so the tests can
+// substitute a recorder and assert on the sequence of calls.
+var runRclone = func(args ...string) ([]byte, error) {
+	return exec.Command("rclone", args...).CombinedOutput()
+}
+
+// uploadAtomic copies src to provider:subdirectory/name, and guarantees the final name
+// never exists in a partial state.
+//
+// rclone copyto writes straight to the destination name. On a backend that streams in
+// place — local, sftp, ftp — a transfer that dies halfway leaves a truncated file
+// sitting under a perfectly valid archive name. The request fails and the caller is told
+// so, but the damage outlives the request: the sidecar's retention policy counts that
+// corpse as a real backup and will happily prune a good older one to make room for it.
+//
+// So the bytes land under a name nothing recognises, and only a completed transfer gets
+// renamed to the one that counts. The rename is server-side and per-object, so the final
+// name appears complete or not at all. A failed transfer takes its leftovers with it.
+//
+// The temporary name starts with a dot, which is what keeps it out of the retention
+// policy's reach: that matches archives by their configured prefix, and no prefix can
+// begin with one.
+func uploadAtomic(src, provider, subdirectory, name string) (string, []byte, error) {
+	destination := provider + ":" + filepath.Join(subdirectory, name)
+	incomplete := provider + ":" + filepath.Join(subdirectory, ".incomplete-"+name)
+
+	if out, err := runRclone("copyto", src, incomplete); err != nil {
+		discardIncomplete(incomplete)
+		return destination, out, err
+	}
+	if out, err := runRclone("moveto", incomplete, destination); err != nil {
+		discardIncomplete(incomplete)
+		return destination, out, err
+	}
+	return destination, nil, nil
+}
+
+// discardIncomplete removes the leftovers of a transfer that did not finish. Best
+// effort: the upload has already failed, and the caller is about to hear about that
+// rather than about the cleanup.
+func discardIncomplete(incomplete string) {
+	if out, err := runRclone("deletefile", incomplete); err != nil {
+		logger.Warn("failed to remove incomplete upload",
+			"target", incomplete, "error", strings.TrimSpace(string(out)))
+	}
+}
+
 func rcloneError(w http.ResponseWriter, out []byte, err error) {
 	msg := strings.TrimSpace(string(out))
 	if msg == "" {
@@ -257,9 +304,9 @@ func backupHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	tmp.Close()
 
-	destination := provider + ":" + filepath.Join(subdirectory, name)
-	logger.Info("uploading backup", "destination", destination, "size_bytes", written)
-	out, err := exec.Command("rclone", "copyto", tmp.Name(), destination).CombinedOutput()
+	logger.Info("uploading backup",
+		"destination", provider+":"+filepath.Join(subdirectory, name), "size_bytes", written)
+	destination, out, err := uploadAtomic(tmp.Name(), provider, subdirectory, name)
 	if err != nil {
 		rcloneError(w, out, err)
 		return
@@ -303,8 +350,7 @@ func cmdUpload(args []string) error {
 	}
 	tmp.Close()
 
-	destination := provider + ":" + filepath.Join(subdirectory, name)
-	out, err := exec.Command("rclone", "copyto", tmp.Name(), destination).CombinedOutput()
+	destination, out, err := uploadAtomic(tmp.Name(), provider, subdirectory, name)
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
 		if msg == "" {
