@@ -93,6 +93,14 @@ ignored if sent: where archives land is the sidecar's decision, not the caller's
 A failed forward is reported as a failure, so your service can log or retry it. It is
 never answered with `ok`.
 
+**Wait for the answer.** It comes once the archive is on the remote, which for a large one
+is minutes, and longer if an earlier archive is still uploading. A client that gives up
+first records a failure while the archive is stored anyway, and its retry stores it again.
+Give the request as long as `UPLOAD_TIMEOUT`. Node's `fetch` gives up after five minutes
+of waiting for an answer: post with `node:http`, or give undici a longer
+`headersTimeout`. If your service backs up as it stops, give its container a
+`stop_grace_period` that covers the upload; `docker stop` allows ten seconds.
+
 ### `GET /health`
 
 `{"status":"ok","last_backup":"2026-09-03T04:15:00Z"}`, plus `last_error` if the most
@@ -163,6 +171,10 @@ kept), or `BACKUP_EXTENSION` if you would rather state it, or `.tgz` if neither 
 The timestamp is the agent's own, in UTC. It is not taken from the name you post, because
 retention can only prune archives it can date, and a name chosen by the service carries no
 promise of a parseable one.
+
+It is the moment the archive arrived, even when it then waits for an earlier upload to
+finish. Two archives arriving in the same second are named a second apart rather than one
+overwriting the other.
 
 ## Retention
 

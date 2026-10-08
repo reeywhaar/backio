@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -371,6 +372,113 @@ func TestBackupHandlerAnswersOnlyAfterTheUploadCompletes(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"status":"ok"`) {
 		t.Errorf("body = %s", rec.Body)
+	}
+}
+
+// An archive is named for when it arrived. Named once it had the lock, one that queued
+// behind another upload took the moment that upload finished, minutes after it came in.
+func TestBackupHandlerNamesAnArchiveWhenItArrives(t *testing.T) {
+	var (
+		mu  sync.Mutex
+		now time.Time
+	)
+	stamped := make(chan struct{}, 2)
+	setClock := func(at time.Time) {
+		mu.Lock()
+		defer mu.Unlock()
+		now = at
+	}
+	old := clock
+	clock = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		stamped <- struct{}{}
+		return now
+	}
+	t.Cleanup(func() { clock = old })
+
+	entered := make(chan struct{}, 2)
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			fmt.Fprint(w, "[]") // nothing to prune
+			return
+		}
+		r.ParseMultipartForm(1 << 20)
+		entered <- struct{}{}
+		<-release
+		fmt.Fprintf(w, `{"status":"ok","destination":%q}`, "gdrive:myapp/production/"+r.FormValue("name"))
+	}))
+	t.Cleanup(srv.Close)
+	// Registered after Close so it runs first: a failure below must not leave Close
+	// waiting on an upload nobody will release.
+	releaseUploads := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(releaseUploads)
+
+	a := newAgent(t, config{
+		url: srv.URL, token: "secret", provider: "gdrive", subdirectory: "myapp/production",
+	})
+
+	first, second := make(chan *httptest.ResponseRecorder, 1), make(chan *httptest.ResponseRecorder, 1)
+
+	setClock(time.Date(2026, 9, 3, 4, 15, 0, 0, time.UTC))
+	go func() { first <- postArchive(t, a, "backup.tgz", []byte("first")) }()
+	<-stamped
+	<-entered // the first upload is in flight, holding the lock
+
+	setClock(time.Date(2026, 9, 3, 4, 16, 0, 0, time.UTC))
+	go func() { second <- postArchive(t, a, "backup.tgz", []byte("second")) }()
+	select {
+	case <-stamped:
+	case <-time.After(time.Second):
+		t.Fatal("the second archive was not stamped until it got the lock")
+	}
+
+	setClock(time.Date(2026, 9, 3, 4, 30, 0, 0, time.UTC)) // the first upload ends much later
+	releaseUploads()
+
+	<-first
+	rec := <-second
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	var body struct{ Destination string }
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if want := "gdrive:myapp/production/myapp-production-20260903_041600.tgz"; body.Destination != want {
+		t.Errorf("destination = %q, want %q", body.Destination, want)
+	}
+}
+
+// Two archives in the same second must not share a name, or the second overwrites the
+// first, locally and on the remote alike.
+func TestBackupHandlerNeverReusesAName(t *testing.T) {
+	old := clock
+	clock = func() time.Time { return time.Date(2026, 9, 3, 4, 15, 0, 0, time.UTC) }
+	t.Cleanup(func() { clock = old })
+
+	dir := t.TempDir()
+	a := newAgent(t, config{dir: dir, keepLocal: true})
+	for _, body := range []string{"first", "second"} {
+		if rec := postArchive(t, a, "backup.tgz", []byte(body)); rec.Code != http.StatusOK {
+			t.Fatalf("status %d: %s", rec.Code, rec.Body)
+		}
+	}
+
+	// Both kept, a second apart, in the order they arrived.
+	for name, want := range map[string]string{
+		"myapp-production-20260903_041500.tgz": "first",
+		"myapp-production-20260903_041501.tgz": "second",
+	} {
+		got, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Errorf("%s: %s", name, err)
+			continue
+		}
+		if string(got) != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
 	}
 }
 

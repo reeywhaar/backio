@@ -64,6 +64,10 @@ var logger = slog.New(slog.NewJSONHandler(os.Stderr, nil))
 // that fails and check what the failure leaves behind.
 var sevenZip = "7z"
 
+// clock is where archive timestamps come from, as a variable so a test can hold it still
+// or move it while a request waits.
+var clock = time.Now
+
 type config struct {
 	port          string
 	url           string
@@ -89,6 +93,11 @@ type agent struct {
 	mu          sync.Mutex
 	lastSuccess time.Time
 	lastError   string
+
+	// Separate from mu, which an upload holds for minutes: a request is stamped the moment
+	// it arrives, not once it gets its turn.
+	stampMu   sync.Mutex
+	lastStamp time.Time
 }
 
 func main() {
@@ -158,10 +167,12 @@ func (a *agent) backupHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ts := a.stamp()
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	destination, err := a.receive(r)
+	destination, err := a.receive(r, ts)
 	if err != nil {
 		a.lastError = err.Error()
 		logError("backup", err)
@@ -180,10 +191,9 @@ func (a *agent) backupHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, `{"status":"ok","destination":%q}`, destination)
 }
 
-func (a *agent) receive(r *http.Request) (string, error) {
+func (a *agent) receive(r *http.Request, ts string) (string, error) {
 	cfg := a.cfg
 
-	ts := timestamp()
 	// The archive lands under a temporary name first: the extension comes from fields
 	// that multipart is free to send after the file, and a half-written archive must
 	// never sit in the directory retention reads under a name that looks complete.
@@ -863,9 +873,25 @@ func logError(operation string, err error) {
 	logger.Error(err.Error(), "operation", operation)
 }
 
-// timestamp is UTC, matching the format retention.go parses back out.
-func timestamp() string {
-	return time.Now().UTC().Format("20060102_150405")
+// stamp is the timestamp an archive is named with: UTC, in the format retention.go parses
+// back out.
+//
+// Taken when the request arrives. Taken once it had the lock, a request that queued behind
+// another upload was named for when that upload finished, minutes after it came in.
+//
+// Never the same twice. Two archives in the same second would share a name, and the
+// second would overwrite the first locally and on the remote, so the later one is moved
+// on a second: still dateable, still in arrival order.
+func (a *agent) stamp() string {
+	a.stampMu.Lock()
+	defer a.stampMu.Unlock()
+
+	t := clock().UTC().Truncate(time.Second)
+	if !t.After(a.lastStamp) {
+		t = a.lastStamp.Add(time.Second)
+	}
+	a.lastStamp = t
+	return t.Format("20060102_150405")
 }
 
 func sizeOf(info os.FileInfo) int64 {
